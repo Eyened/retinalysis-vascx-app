@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "models": {
+    "av": {
+      "label": "Artery / vein",
+      "kind": "segmentation",
+      "classes": 4,
+      "config": {
+        "ttaFlips": [
+          [
+            2
+          ],
+          [
+            3
+          ],
+          [
+            2,
+            3
+          ]
+        ]
+      },
+      "url": "https://huggingface.co/Eyened/vascx/resolve/main/artery_vein/av_wsoft_patches_02_finetune.onnx"
+    },
+    "vessels": {
+      "label": "Vessels",
+      "kind": "segmentation",
+      "classes": 2,
+      "config": {
+        "patchSize": [
+          1024,
+          1024
+        ],
+        "overlap": 0,
+        "ttaFlips": []
+      },
+      "url": "https://huggingface.co/Eyened/vascx/resolve/main/vessels/vessels_may26.onnx"
+    },
+    "disc": {
+      "label": "Optic disc",
+      "kind": "segmentation",
+      "classes": 2,
+      "config": {
+        "patchSize": [
+          512,
+          512
+        ],
+        "overlap": 0,
+        "ttaFlips": []
+      },
+      "url": "https://huggingface.co/Eyened/vascx/resolve/main/disc/disc_may26.onnx"
+    },
+    "fovea": {
+      "label": "Fovea",
+      "kind": "heatmap",
+      "classes": 1,
+      "config": {
+        "patchSize": [
+          512,
+          512
+        ],
+        "overlap": 0,
+        "ttaFlips": []
+      },
+      "url": "https://huggingface.co/Eyened/vascx/resolve/main/fovea/fovea_may26.onnx"
+    }
+  },
+  "defaults": {
+    "inputSize": 1024,
+    "patchSize": [
+      512,
+      512
+    ],
+    "overlap": 0.5,
+    "blend": "gaussian",
+    "normalize": "imagenet",
+    "ttaFlips": []
+  },
+  "notes": [
+    "Model urls are public HTTPS URLs. The browser downloads them on first use and caches the ONNX bytes in Cache Storage.",
+    "If model files change at the same URLs, bump this manifest version so the application creates a fresh model cache.",
+    "If embedded ONNX config metadata is exported separately, merge it into this manifest so the browser worker can mirror retinalysis-inference."
+  ]
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Retinalysis VascX">
+  <rect width="192" height="192" rx="32" fill="#0f766e"/>
+  <circle cx="96" cy="96" r="62" fill="#f8fafc"/>
+  <circle cx="96" cy="96" r="38" fill="#134e4a"/>
+  <path d="M45 102c28-28 72-28 102 0" fill="none" stroke="#ef4444" stroke-width="10" stroke-linecap="round"/>
+  <path d="M48 119c32-18 66-18 96 0" fill="none" stroke="#2563eb" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="96" cy="96" r="10" fill="#facc15"/>
+</svg>
