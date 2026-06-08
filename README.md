@@ -76,4 +76,11 @@ The ONNX versions of the models, which should be included and loaded as static a
 ONNX runtime should be set up with WebGPU if available, otherwise default to WASM. Any browsers not supporting either are unsupported and a clear error message should be shown on load. Show a warning or notice if GPU acceleration is not available.
 File System Access API should be the default for loading images for batch processing in Screen 2. However, it should only be required if the user attempts to pick a folder for segmentations. For input images, fall back to a multi file input element, where the user can manually pick images rather than a folder.
 
+## GitHub Pages deployment
+
+This app is configured for the public URL `https://eyened.github.io/retinalysis-vascx-app/`.
+
+Deployment is handled by `.github/workflows/deploy-pages.yml`. In the GitHub repository settings, set Pages to deploy from GitHub Actions, then push to `main` or run the workflow manually.
+
+The Vite base path is `/retinalysis-vascx-app/` during GitHub Actions builds. For local development it remains `/`, and it can be overridden with `VITE_BASE_PATH` when needed.
 
