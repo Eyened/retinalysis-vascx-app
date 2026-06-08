@@ -6,6 +6,7 @@
     Download,
     Eye,
     FolderOpen,
+    Github,
     ImagePlus,
     Loader2,
     Play,
@@ -22,6 +23,7 @@
     BiomarkerRow,
     FeatureExtractionResult,
     FeatureSetSummary,
+    InferenceInitResult,
     InferenceResult,
     OrtBackend,
     PreprocessResult,
@@ -40,6 +42,21 @@
     progress?: number;
   }
 
+  interface RunProgressState {
+    active: boolean;
+    stage: string;
+    substage?: string;
+    progress?: number;
+    fileName?: string;
+  }
+
+  interface ModelDownloadState {
+    label: string;
+    progress?: number;
+    bytesLoaded?: number;
+    bytesTotal?: number;
+  }
+
   let activeScreen: Screen = 'single';
   let preprocessClient: PipelineWorkerClient;
   let inferenceClient: PipelineWorkerClient;
@@ -52,7 +69,8 @@
   };
 
   let featureSets: FeatureSetSummary[] = [];
-  let selectedFeatureSet = 'full_v2';
+  let defaultFeatureSet = 'Full V3';
+  let selectedFeatureSet = 'Full V3';
   let uploadError = '';
   let processing = false;
   let uploadedUrl = '';
@@ -65,7 +83,7 @@
   let overlayUrl = '';
   let modalImage: { title: string; url: string; filename: string } | undefined;
   let plotModal: { title: string; url: string } | undefined;
-  let stageMessages: string[] = [];
+  let runProgress: RunProgressState = { active: false, stage: '' };
   let currentCsvDownloaded = true;
 
   let sourceFiles: File[] = [];
@@ -78,18 +96,25 @@
   let segmentationDirectory: FileSystemDirectoryHandle | undefined;
   let segmentationFolderName = '';
   let batchListOpen = false;
+  let restoredBatchCache = false;
   let inferenceBackend: OrtBackend | undefined;
+  let inferenceAdapterName = '';
+  let modelDownload: ModelDownloadState | undefined;
+  let attributionHtml = '';
 
+  $: backendSummaryText = inferenceBackend ? (inferenceAdapterName ? `${inferenceBackend.toUpperCase()} · ${inferenceAdapterName}` : inferenceBackend.toUpperCase()) : '';
   $: appReady = workers.preprocess.status === 'ready' && workers.features.status === 'ready';
   $: inferenceReady = workers.inference.status === 'ready';
   $: canRunSingle = appReady && inferenceReady && !processing;
   $: canRunBatch = canRunSingle && sourceFiles.length > 0 && !batchRunning;
+  $: batchResumeAvailable = restoredBatchCache && batchResults.length > 0 && !batchRunning;
 
   onMount(() => {
     preprocessClient = new PipelineWorkerClient(new PreprocessWorker(), handleProgress);
     inferenceClient = new PipelineWorkerClient(new InferenceWorker(), handleProgress);
     featureClient = new PipelineWorkerClient(new FeatureWorker(), handleProgress);
     void initialiseWorkers().then(restoreBatchCache);
+    void loadAttribution();
 
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (batchRunning || (!batchDownloaded && batchResults.length > 0)) {
@@ -108,8 +133,8 @@
 
   async function initialiseWorkers() {
     setWorker('preprocess', { status: 'loading', message: 'Loading Pyodide preprocessing worker', progress: 0 });
-    setWorker('inference', { status: 'loading', message: 'Loading ONNX models', progress: 0 });
-    setWorker('features', { status: 'loading', message: 'Loading Pyodide feature worker', progress: 0 });
+    setWorker('inference', { status: 'loading', message: 'Loading AI models', progress: 0 });
+    setWorker('features', { status: 'loading', message: 'Loading biomarker extraction worker', progress: 0 });
 
     const results = await Promise.allSettled([
       preprocessClient.request({ type: 'init' }),
@@ -121,31 +146,135 @@
     else setWorker('preprocess', { status: 'error', message: results[0].reason.message });
 
     if (results[1].status === 'fulfilled') {
-      const payload = results[1].value as { backend?: OrtBackend } | undefined;
+      const payload = results[1].value as InferenceInitResult | undefined;
       inferenceBackend = payload?.backend;
-      console.info('[VascX] ONNX Runtime backend ready:', inferenceBackend ?? 'unknown');
-      setWorker('inference', { status: 'ready', message: `Inference ready${inferenceBackend ? ` (${inferenceBackend.toUpperCase()})` : ''}`, progress: 1 });
+      inferenceAdapterName = payload?.adapterName ?? '';
+      defaultFeatureSet = payload?.defaultFeatureSet ?? defaultFeatureSet;
+      console.info('[VascX] ONNX Runtime backend ready:', inferenceBackend ?? 'unknown', inferenceAdapterName);
+      setWorker('inference', { status: 'ready', message: `AI models ready${backendSummaryText ? ` (${backendSummaryText})` : ''}`, progress: 1 });
     } else setWorker('inference', { status: 'error', message: results[1].reason.message });
 
     if (results[2].status === 'fulfilled') {
-      setWorker('features', { status: 'ready', message: 'Feature extraction ready', progress: 1 });
+      setWorker('features', { status: 'ready', message: 'Biomarker extraction ready', progress: 1 });
       featureSets = (await featureClient.request({ type: 'loadFeatureSets' })) as FeatureSetSummary[];
-      if (!featureSets.some((set) => set.name === selectedFeatureSet)) {
-        selectedFeatureSet = featureSets[0]?.name ?? selectedFeatureSet;
-      }
+      selectedFeatureSet = resolveFeatureSetName(featureSets, defaultFeatureSet, selectedFeatureSet) ?? selectedFeatureSet;
     } else {
       setWorker('features', { status: 'error', message: results[2].reason.message });
     }
   }
 
   function handleProgress(message: ProgressMessage) {
-    if (message.stage === 'preprocess' || message.stage === 'inference' || message.stage === 'features') {
-      setWorker(message.stage, { status: 'loading', message: message.message, progress: message.progress });
+    if (message.stage === 'inference' && message.backend) {
+      inferenceBackend = message.backend;
+      inferenceAdapterName = message.adapterName ?? '';
     }
+    if (message.stage === 'preprocess' || message.stage === 'inference' || message.stage === 'features') {
+      if (message.phase === 'init' || workers[message.stage].status !== 'ready') {
+        setWorker(message.stage, { status: 'loading', message: message.message, progress: message.progress });
+      }
+      updateModelDownload(message);
+      if (message.phase === 'run' || runProgress.active) {
+        updateRunProgress(message);
+      }
+    }
+  }
+
+  function updateModelDownload(message: ProgressMessage) {
+    if (!message.modelLabel) return;
+    modelDownload = {
+      label: message.modelLabel,
+      progress: message.downloadProgress,
+      bytesLoaded: message.bytesLoaded,
+      bytesTotal: message.bytesTotal
+    };
+    if (message.downloadProgress === 1) {
+      const label = message.modelLabel;
+      setTimeout(() => {
+        if (modelDownload?.label === label && modelDownload.progress === 1) modelDownload = undefined;
+      }, 600);
+    }
+  }
+
+  function updateRunProgress(message: ProgressMessage) {
+    runProgress = {
+      active: true,
+      stage: stageLabel(message.stage),
+      substage: message.substage ?? message.message,
+      progress: message.progress,
+      fileName: currentBatchName || uploadedName || runProgress.fileName
+    };
   }
 
   function setWorker(name: WorkerName, patch: Partial<WorkerUiState>) {
     workers = { ...workers, [name]: { ...workers[name], ...patch } };
+  }
+
+  function stageLabel(stage: ProgressMessage['stage']) {
+    if (stage === 'preprocess') return 'Preprocessing';
+    if (stage === 'inference') return 'AI models';
+    if (stage === 'features') return 'Biomarker extraction';
+    return 'Initialisation';
+  }
+
+  function setRunProgress(stage: string, substage: string, progress?: number, fileName?: string) {
+    runProgress = { active: true, stage, substage, progress, fileName: (fileName ?? currentBatchName) || uploadedName };
+  }
+
+  function clearRunProgress() {
+    runProgress = { active: false, stage: '' };
+  }
+
+  function resolveFeatureSetName(sets: FeatureSetSummary[], preferred: string, fallback: string) {
+    const candidates = [preferred, fallback].map(normalizeFeatureSetName).filter(Boolean);
+    for (const candidate of candidates) {
+      const match = sets.find((set) => normalizeFeatureSetName(set.name) === candidate || normalizeFeatureSetName(set.displayName) === candidate);
+      if (match) return match.name;
+    }
+    return sets[0]?.name;
+  }
+
+  function normalizeFeatureSetName(value: string) {
+    return value.trim().toLowerCase().replace(/[ _-]+/g, '');
+  }
+
+  function formatBytes(value?: number) {
+    if (value === undefined) return '';
+    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    if (value >= 1024) return `${(value / 1024).toFixed(0)} KB`;
+    return `${value} B`;
+  }
+
+  function workerDisplayName(name: string) {
+    if (name === 'preprocess') return 'Preprocessing';
+    if (name === 'inference') return 'AI models';
+    if (name === 'features') return 'Biomarker extraction';
+    return name;
+  }
+
+  async function loadAttribution() {
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}attribution.md`);
+      if (!response.ok) throw new Error(response.statusText);
+      attributionHtml = markdownToHtml(await response.text());
+    } catch {
+      attributionHtml = markdownToHtml(DEFAULT_ATTRIBUTION_MD);
+    }
+  }
+
+  function markdownToHtml(markdown: string) {
+    return markdown
+      .trim()
+      .split(/\n{2,}/)
+      .map((block) => `<p>${inlineMarkdown(block).replace(/\n/g, '<br>')}</p>`)
+      .join('');
+  }
+
+  function inlineMarkdown(value: string) {
+    return escapeHtml(value).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  }
+
+  function escapeHtml(value: string) {
+    return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char] ?? char);
   }
 
   async function handleSingleFile(file: File) {
@@ -171,6 +300,7 @@
       uploadError = error instanceof Error ? error.message : String(error);
     } finally {
       processing = false;
+      clearRunProgress();
       markReadyAfterRun();
     }
   }
@@ -186,19 +316,20 @@
   function runPipelineForFile(file: File, options: PipelineRunOptions & { keepArtifacts: true }): Promise<FullPipelineResult>;
   function runPipelineForFile(file: File, options: PipelineRunOptions & { keepArtifacts: false }): Promise<BatchPipelineResult>;
   async function runPipelineForFile(file: File, options: PipelineRunOptions): Promise<FullPipelineResult | BatchPipelineResult> {
-    stageMessages = [];
+    const fileName = file.webkitRelativePath || file.name;
+    setRunProgress('Preprocessing', 'Preparing image', 0, fileName);
     await featureClient.request({ type: 'disposeCurrentRetina' });
 
     try {
       const bytes = await fileToBytes(file);
 
-      stageMessages = ['Preprocessing image'];
+      setRunProgress('Preprocessing', 'Detecting fundus bounds', 0.1, fileName);
       const preprocess = (await preprocessClient.request(
         { type: 'preprocessImage', image: { bytes, name: file.name, mimeType: file.type } },
         transferList(bytes)
       )) as PreprocessResult;
 
-      stageMessages = ['Running ONNX inference'];
+      setRunProgress('AI models', 'Preparing AI model inputs', 0, fileName);
       const inference = (await inferenceClient.request({
         type: 'runInference',
         id: preprocess.id,
@@ -211,7 +342,7 @@
         await writeSegmentationOutputs(options.segmentationDirectory, preprocess.id, inference, preprocess.bounds);
       }
 
-      stageMessages = ['Extracting biomarkers'];
+      setRunProgress('Biomarker extraction', 'Preparing biomarker analysis', 0, fileName);
       const featureRequest = {
         type: 'extractFeatures' as const,
         id: preprocess.id,
@@ -248,8 +379,8 @@
 
   function markReadyAfterRun() {
     if (workers.preprocess.status !== 'error') setWorker('preprocess', { status: 'ready', message: 'Preprocessing ready', progress: 1 });
-    if (workers.inference.status !== 'error') setWorker('inference', { status: 'ready', message: `Inference ready${inferenceBackend ? ` (${inferenceBackend.toUpperCase()})` : ''}`, progress: 1 });
-    if (workers.features.status !== 'error') setWorker('features', { status: 'ready', message: 'Feature extraction ready', progress: 1 });
+    if (workers.inference.status !== 'error') setWorker('inference', { status: 'ready', message: `AI models ready${backendSummaryText ? ` (${backendSummaryText})` : ''}`, progress: 1 });
+    if (workers.features.status !== 'error') setWorker('features', { status: 'ready', message: 'Biomarker extraction ready', progress: 1 });
   }
 
   async function renderPlot(row: BiomarkerRow) {
@@ -337,6 +468,7 @@
       batchRecords = cache.records;
       batchResults = cache.results;
       batchDownloaded = cache.downloaded;
+      restoredBatchCache = cache.results.length > 0 || cache.records.some((record) => record.status === 'done');
       return;
     }
 
@@ -352,6 +484,7 @@
     }));
     batchResults = [];
     batchDownloaded = true;
+    restoredBatchCache = false;
   }
 
   async function restoreBatchCache() {
@@ -360,6 +493,7 @@
     batchRecords = cache.records;
     batchResults = cache.results;
     batchDownloaded = cache.downloaded;
+    restoredBatchCache = cache.results.length > 0 || cache.records.some((record) => record.status === 'done');
   }
 
   async function runBatch() {
@@ -397,6 +531,7 @@
 
     currentBatchName = '';
     batchRunning = false;
+    clearRunProgress();
     await featureClient.request({ type: 'disposeCurrentRetina' });
     await saveBatchMeta({ sourceSignature: signature, sourceHash, createdAt, downloaded: batchDownloaded, records: batchRecords });
     markReadyAfterRun();
@@ -435,6 +570,7 @@
     batchRecords = sourceFiles.map((file) => ({ id: file.name.replace(/\.[^.]+$/, ''), name: file.name, relativePath: file.webkitRelativePath || file.name, status: 'pending' }));
     batchResults = [];
     batchDownloaded = true;
+    restoredBatchCache = false;
   }
 
   function downloadSingleCsv() {
@@ -455,10 +591,16 @@
 
   function switchScreen(screen: Screen) {
     if (activeScreen === 'batch' && (batchRunning || (!batchDownloaded && batchResults.length > 0))) {
-      if (!confirm('Batch data may be lost if you leave before downloading the CSV. Continue?')) return;
+      if (!confirm('Biomarker results may be lost if you leave before downloading the CSV. Continue?')) return;
     }
     activeScreen = screen;
   }
+
+  const DEFAULT_ATTRIBUTION_MD = `VascX was developed at the Eyened Reading Center (Rotterdam) as open source AI / software to support oculomics and ophthalmic clinical research. Our Python pipeline is available at [eyened/retinalysis-vascx](https://github.com/eyened/retinalysis-vascx)
+
+If VascX is helpful to your research, please consider citing our manuscripts:
+[retinalysis-vascx: An explainable software toolbox for the extraction of retinal vascular biomarkers](https://arxiv.org/abs/2602.08580)
+[VascX Models: Model Ensembles for Retinal Vascular Analysis from Color Fundus Images](https://arxiv.org/abs/2409.16016)`;
 </script>
 
 <svelte:head>
@@ -475,7 +617,7 @@
       {#each Object.entries(workers) as [name, worker]}
         <span class:ready={worker.status === 'ready'} class:error={worker.status === 'error'} class="status-pill">
           {#if worker.status === 'loading'}<Loader2 size={14} class="spin" />{:else if worker.status === 'ready'}<CheckCircle2 size={14} />{:else if worker.status === 'error'}<AlertTriangle size={14} />{/if}
-          {name}: {worker.status}
+          {workerDisplayName(name)}: {worker.status}
         </span>
       {/each}
     </div>
@@ -483,8 +625,11 @@
 
   <div class="layout">
     <aside class="sidebar">
-      <button class:active={activeScreen === 'single'} on:click={() => switchScreen('single')}><ImagePlus size={18} /> Single image</button>
-      <button class:active={activeScreen === 'batch'} on:click={() => switchScreen('batch')}><FolderOpen size={18} /> Batch inference</button>
+      <div class="sidebar-nav">
+        <button class:active={activeScreen === 'single'} on:click={() => switchScreen('single')}><ImagePlus size={18} /> Single image</button>
+        <button class:active={activeScreen === 'batch'} on:click={() => switchScreen('batch')}><FolderOpen size={18} /> Batch inference</button>
+      </div>
+      <a class="sidebar-github" href="https://github.com/eyened/retinalysis-vascx" target="_blank" rel="noreferrer"><Github size={18} /> eyened/retinalysis-vascx</a>
     </aside>
 
     <main class="content">
@@ -494,18 +639,30 @@
           <h2>{appReady && inferenceReady ? 'Pipeline ready' : 'Loading browser pipeline'}</h2>
           <div class="backend-summary">
             <span>ONNX backend</span>
-            <strong class:warn={inferenceBackend === 'wasm'}>{inferenceBackend ? inferenceBackend.toUpperCase() : 'Detecting'}</strong>
+            <strong class:warn={inferenceBackend === 'wasm'}>{backendSummaryText || 'Detecting'}</strong>
           </div>
         </div>
         <div class="worker-list">
           {#each Object.entries(workers) as [name, worker]}
             <div class="worker-row">
-              <span>{name}</span>
+              <span>{workerDisplayName(name)}</span>
               <progress value={worker.progress ?? 0} max="1"></progress>
               <small>{worker.message}</small>
+              {#if name === 'inference' && modelDownload}
+                <div class="download-progress">
+                  <div>
+                    <span>Downloading {modelDownload.label}</span>
+                    <small>{formatBytes(modelDownload.bytesLoaded)}{modelDownload.bytesTotal ? ` / ${formatBytes(modelDownload.bytesTotal)}` : ''}</small>
+                  </div>
+                  <progress value={modelDownload.progress ?? 0} max="1"></progress>
+                </div>
+              {/if}
             </div>
           {/each}
         </div>
+        {#if inferenceBackend === 'wasm'}
+          <div class="alert gpu-warning"><AlertTriangle size={18} /> No useable GPU acceleration was detected. The AI models will run on the CPU. This may make the pipeline slow. We recommend running on a computer with a dedicated GPU or Apple M chip. If your machine does have a GPU, make sure that you are using an up-to-date browser (Chrome or Edge are recommended) and that the system's GPU drivers are up to date.</div>
+        {/if}
       </section>
 
       {#if activeScreen === 'single'}
@@ -513,10 +670,10 @@
           <div class="screen-header">
             <div>
               <p class="eyebrow">Single-image inference</p>
-              <h2>Extract retinal vascular parameters</h2>
-              <p>Drop one fundus image, choose a VascX feature set, and run all stages in browser memory.</p>
+              <h2>Extract retinal vascular biomarkers</h2>
+              <p>Drop one fundus image, choose a biomarker set, and run all stages in browser memory.</p>
             </div>
-            <label class="field-label">Feature set
+            <label class="field-label">Biomarker set
               <select bind:value={selectedFeatureSet} disabled={processing}>
                 {#each featureSets as set}
                   <option value={set.name}>{set.displayName}</option>
@@ -539,21 +696,29 @@
             <div class="alert"><AlertTriangle size={18} /> {uploadError} Please try another image or report the error with the browser console details.</div>
           {/if}
 
-          {#if processing}
-            <div class="progress-card"><Loader2 class="spin" /> {stageMessages[0] ?? 'Processing image'}</div>
+          {#if processing && runProgress.active}
+            <div class="progress-card run-progress-card">
+              <Loader2 class="spin" />
+              <div class="run-progress-copy">
+                <strong>{runProgress.stage}</strong>
+                {#if runProgress.fileName}<span>{runProgress.fileName}</span>{/if}
+                {#if runProgress.substage}<span class="substage"><Loader2 class="spin" size={14} /> {runProgress.substage}</span>{/if}
+                {#if runProgress.progress !== undefined}<progress value={runProgress.progress} max="1"></progress>{/if}
+              </div>
+            </div>
           {/if}
 
           <div class="image-grid">
             <ImageCard title="Uploaded image" url={uploadedUrl} filename={uploadedName || 'uploaded.png'} onOpen={() => (modalImage = { title: 'Uploaded image', url: uploadedUrl, filename: uploadedName || 'uploaded.png' })} />
             <ImageCard title="Bounds" url={boundsUrl} filename={`${preprocessResult?.id ?? 'image'}_bounds.png`} bytes={preprocessResult?.boundsPng} onOpen={() => (modalImage = { title: 'Bounds', url: boundsUrl, filename: `${preprocessResult?.id ?? 'image'}_bounds.png` })} />
-            <ImageCard title="Inference overlay" url={overlayUrl} filename={`${preprocessResult?.id ?? 'image'}_overlay.png`} bytes={inferenceResult?.overlayPng} onOpen={() => (modalImage = { title: 'Inference overlay', url: overlayUrl, filename: `${preprocessResult?.id ?? 'image'}_overlay.png` })} />
+            <ImageCard title="AI model overlay" url={overlayUrl} filename={`${preprocessResult?.id ?? 'image'}_overlay.png`} bytes={inferenceResult?.overlayPng} onOpen={() => (modalImage = { title: 'AI model overlay', url: overlayUrl, filename: `${preprocessResult?.id ?? 'image'}_overlay.png` })} />
           </div>
 
           <section class="panel biomarkers-panel">
             <div class="panel-header">
               <div>
                 <h3>Biomarkers</h3>
-                <p>{biomarkers.length ? `${biomarkers.length} values from ${selectedFeatureSet}` : 'Run an image to calculate biomarkers.'}</p>
+                <p>{biomarkers.length ? `${biomarkers.length} biomarkers from ${selectedFeatureSet}` : 'Run an image to calculate biomarkers.'}</p>
               </div>
               <button class="button" disabled={!biomarkers.length} on:click={downloadSingleCsv}><Download size={16} /> CSV</button>
             </div>
@@ -574,6 +739,10 @@
               </table>
             </div>
           </section>
+          <section class="panel about-panel">
+            <h3>About VascX</h3>
+            <div class="about-copy">{@html attributionHtml}</div>
+          </section>
         </section>
       {:else}
         <section class="screen batch-screen">
@@ -587,24 +756,25 @@
 
           <div class="folder-row">
             <section class="folder-box">
-              <FolderOpen size={22} />
-              <h3>Source folder</h3>
+              <div class="folder-title"><FolderOpen size={22} /><h3>Source folder</h3></div>
               <p>Deep search for {VALID_IMAGE_EXTENSIONS.join(', ')}.</p>
               <button class="button primary" on:click={chooseSourceFolder}><FolderOpen size={16} /> Select source</button>
               <input id="batch-file-input" class="hidden" type="file" multiple webkitdirectory on:change={onBatchFileInput} />
-              <small>{sourceName || 'No source selected'}</small>
+              {#if sourceName}<small>{sourceName}</small>{/if}
             </section>
             <section class="folder-box">
-              <FolderOpen size={22} />
-              <h3>Segmentations folder</h3>
-              <p>Optional empty folder for masks, fovea, and bounds sidecars.</p>
+              <div class="folder-title"><FolderOpen size={22} /><h3>Segmentations folder</h3></div>
+              <p>Optional empty folder. If selected, the app will write intermediate segmentation masks, fovea, and bounds files to this folder. Select only if these files need to be exported.</p>
               <button class="button" on:click={chooseSegmentationFolder}><FolderOpen size={16} /> Select output</button>
-              <small>{segmentationFolderName || 'Intermediate files stay in memory'}</small>
+              {#if segmentationFolderName}<small>{segmentationFolderName}</small>{/if}
             </section>
           </div>
 
           {#if batchRecords.length}
-            <section class="panel">
+            <section class="panel batch-run-panel">
+              {#if batchResumeAvailable}
+                <div class="alert resume-alert"><AlertTriangle size={18} /> Partial results from a previous run are available. Download CSV saves the current cached outputs. Re-select the same source folder to continue only the remaining images. Clear results deletes the cached outputs and starts this folder from scratch.</div>
+              {/if}
               <div class="panel-header">
                 <div>
                   <h3>{batchRecords.length} images found</h3>
@@ -637,8 +807,23 @@
                   </div>
                 {/if}
               </details>
+              {#if batchRunning && runProgress.active}
+                <div class="progress-card run-progress-card batch-current-progress">
+                  <Loader2 class="spin" />
+                  <div class="run-progress-copy">
+                    <strong>{runProgress.stage}</strong>
+                    {#if runProgress.fileName}<span>{runProgress.fileName}</span>{/if}
+                    {#if runProgress.substage}<span class="substage"><Loader2 class="spin" size={14} /> {runProgress.substage}</span>{/if}
+                    {#if runProgress.progress !== undefined}<progress value={runProgress.progress} max="1"></progress>{/if}
+                  </div>
+                </div>
+              {/if}
             </section>
           {/if}
+          <section class="panel about-panel">
+            <h3>About VascX</h3>
+            <div class="about-copy">{@html attributionHtml}</div>
+          </section>
         </section>
       {/if}
     </main>

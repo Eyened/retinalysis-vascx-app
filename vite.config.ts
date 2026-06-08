@@ -17,7 +17,7 @@ export default defineConfig({
       manifest: {
         name: 'Retinalysis VascX',
         short_name: 'VascX',
-        description: 'Browser-only retinal vascular parameter extraction.',
+        description: 'Browser-only retinal vascular biomarker extraction.',
         theme_color: '#0f766e',
         background_color: '#f8fafc',
         display: 'standalone',
@@ -38,7 +38,7 @@ export default defineConfig({
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,json,png,wasm}'],
+        globPatterns: ['**/*.{js,css,html,svg,json,png,md,wasm}'],
         maximumFileSizeToCacheInBytes: 32 * 1024 * 1024
       }
     })

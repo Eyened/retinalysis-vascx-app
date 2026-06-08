@@ -1,5 +1,5 @@
 import * as ort from 'onnxruntime-web/webgpu';
-import type { InferenceConfig, InferenceResult, ModelManifest, OrtBackend, WorkerRequest, WorkerResponse } from '$lib/types/pipeline';
+import type { InferenceConfig, InferenceInitResult, InferenceResult, ModelManifest, OrtBackend, ProgressMessage, WorkerRequest, WorkerResponse } from '$lib/types/pipeline';
 import {
   createOverlayPng,
   decodeImageBytes,
@@ -16,6 +16,7 @@ import {
 
 let manifest: ModelManifest | undefined;
 let backend: OrtBackend | undefined;
+let adapterName: string | undefined;
 let sessions: Record<'av' | 'vessels' | 'disc' | 'fovea', ort.InferenceSession> | undefined;
 
 const MODEL_CACHE_PREFIX = 'vascx-onnx-models';
@@ -47,12 +48,19 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
 };
 
 async function init(requestId: string) {
-  progress('Loading model manifest', 0.05);
+  progress('Loading model manifest', 0.05, { phase: 'init' });
   manifest = await fetchManifest();
   await cleanupOldModelCaches();
   await pruneCurrentModelCache();
-  backend = await resolveBackend();
-  progress(`Using ONNX Runtime ${backend.toUpperCase()} backend`, 0.15);
+  const backendInfo = await resolveBackend();
+  backend = backendInfo.backend;
+  adapterName = backendInfo.adapterName;
+  if (backendInfo.adapter) {
+    const ortEnv = ort.env as unknown as { webgpu?: { adapter?: GPUAdapter } };
+    ortEnv.webgpu = ortEnv.webgpu ?? {};
+    ortEnv.webgpu.adapter = backendInfo.adapter;
+  }
+  progress(`Using ONNX Runtime ${backend.toUpperCase()} backend${adapterName ? ` (${adapterName})` : ''}`, 0.15, { phase: 'init', backend, adapterName });
 
   const executionProviders = backend === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'];
   console.info('[VascX inference] ONNX Runtime backend selected:', backend);
@@ -61,7 +69,7 @@ async function init(requestId: string) {
   const modelKeys = ['av', 'vessels', 'disc', 'fovea'] as const;
   for (let index = 0; index < modelKeys.length; index += 1) {
     const key = modelKeys[index];
-    progress(`Loading ${manifest.models[key].label} model`, 0.15 + (index / modelKeys.length) * 0.8);
+    progress(`Loading ${manifest.models[key].label} model`, 0.15 + (index / modelKeys.length) * 0.8, { phase: 'init' });
     const modelUrl = manifest.models[key].url;
     assertPublicModelUrl(modelUrl, manifest.models[key].label);
     const modelBytes = await fetchOnnxModelBytes(modelUrl, manifest.models[key].label);
@@ -76,8 +84,9 @@ async function init(requestId: string) {
       outputs: sessions[key].outputNames
     });
   }
-  progress('Inference models ready', 1);
-  post({ type: 'ready', requestId, payload: { backend } });
+  progress('Inference models ready', 1, { phase: 'init' });
+  const payload: InferenceInitResult = { backend, adapterName, defaultFeatureSet: manifest.defaultFeatureSet };
+  post({ type: 'ready', requestId, payload });
 }
 
 async function fetchManifest(): Promise<ModelManifest> {
@@ -94,11 +103,11 @@ async function fetchOnnxModelBytes(url: string, label: string): Promise<Uint8Arr
   const cached = cache ? await cache.match(request) : undefined;
 
   if (cached) {
-    return await readAndValidateOnnxResponse(cached, url, label);
+    return await readAndValidateOnnxResponse(cached, url, label, false);
   }
 
   const response = await fetch(request);
-  const bytes = await readAndValidateOnnxResponse(response, url, label);
+  const bytes = await readAndValidateOnnxResponse(response, url, label, true);
 
   if (cache) {
     await cache.put(
@@ -115,14 +124,13 @@ async function fetchOnnxModelBytes(url: string, label: string): Promise<Uint8Arr
   return bytes;
 }
 
-async function readAndValidateOnnxResponse(response: Response, url: string, label: string): Promise<Uint8Array> {
+async function readAndValidateOnnxResponse(response: Response, url: string, label: string, reportDownload: boolean): Promise<Uint8Array> {
   if (!response.ok) {
     throw new Error(`${label} model could not be fetched from ${url}: HTTP ${response.status}`);
   }
 
   const contentType = response.headers.get('content-type') ?? '';
-  const buffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
+  const bytes = await readResponseBytes(response, label, reportDownload);
   const prefix = new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 128))).toLowerCase();
 
   if (contentType.includes('text/html') || prefix.includes('<!doctype html') || prefix.includes('<html')) {
@@ -137,6 +145,68 @@ async function readAndValidateOnnxResponse(response: Response, url: string, labe
     throw new Error(`${label} model is unexpectedly small (${bytes.byteLength} bytes): ${url}`);
   }
 
+  return bytes;
+}
+
+async function readResponseBytes(response: Response, label: string, reportDownload: boolean): Promise<Uint8Array> {
+  const totalHeader = response.headers.get('content-length');
+  const bytesTotal = totalHeader ? Number(totalHeader) : undefined;
+  const hasKnownTotal = typeof bytesTotal === 'number' && Number.isFinite(bytesTotal) && bytesTotal > 0;
+
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (reportDownload) {
+      progress(`Downloading ${label} model`, undefined, {
+        phase: 'init',
+        modelLabel: label,
+        bytesLoaded: bytes.byteLength,
+        bytesTotal: hasKnownTotal ? bytesTotal : bytes.byteLength,
+        downloadProgress: 1
+      });
+    }
+    return bytes;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytesLoaded = 0;
+  let lastProgress = -1;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value);
+    bytesLoaded += value.byteLength;
+    const downloadProgress = hasKnownTotal ? Math.min(1, bytesLoaded / bytesTotal) : undefined;
+    if (reportDownload && (downloadProgress === undefined || downloadProgress - lastProgress >= 0.01 || downloadProgress === 1)) {
+      lastProgress = downloadProgress ?? lastProgress;
+      progress(`Downloading ${label} model`, undefined, {
+        phase: 'init',
+        modelLabel: label,
+        bytesLoaded,
+        bytesTotal: hasKnownTotal ? bytesTotal : undefined,
+        downloadProgress
+      });
+    }
+  }
+
+  const bytes = new Uint8Array(bytesLoaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  if (reportDownload) {
+    progress(`Downloaded ${label} model`, undefined, {
+      phase: 'init',
+      modelLabel: label,
+      bytesLoaded,
+      bytesTotal: hasKnownTotal ? bytesTotal : bytesLoaded,
+      downloadProgress: 1
+    });
+  }
   return bytes;
 }
 
@@ -194,25 +264,46 @@ function assertPublicModelUrl(url: string, label: string) {
   }
 }
 
-async function resolveBackend(): Promise<OrtBackend> {
+async function resolveBackend(): Promise<{ backend: OrtBackend; adapter?: GPUAdapter; adapterName?: string }> {
   const gpu = navigator.gpu;
   if (!gpu) {
     console.warn('[VascX inference] navigator.gpu is unavailable; falling back to ONNX Runtime WASM.');
-    return 'wasm';
+    return { backend: 'wasm' };
   }
 
   console.info('[VascX inference] navigator.gpu is available; requesting a high-performance adapter.');
   try {
     const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (adapter) {
-      console.info('[VascX inference] WebGPU adapter acquired; using ONNX Runtime WebGPU.');
-      return 'webgpu';
+      const resolvedAdapterName = await describeGpuAdapter(adapter);
+      console.info('[VascX inference] WebGPU adapter acquired; using ONNX Runtime WebGPU.', resolvedAdapterName);
+      return { backend: 'webgpu', adapter, adapterName: resolvedAdapterName };
     }
     console.warn('[VascX inference] WebGPU adapter request returned null; falling back to ONNX Runtime WASM.');
   } catch (error) {
     console.warn('[VascX inference] WebGPU adapter request failed; falling back to ONNX Runtime WASM.', error);
   }
-  return 'wasm';
+  return { backend: 'wasm' };
+}
+
+interface BrowserGpuAdapterInfo {
+  description?: string;
+  device?: string;
+  architecture?: string;
+  vendor?: string;
+}
+
+type GpuAdapterWithInfo = GPUAdapter & {
+  info?: BrowserGpuAdapterInfo;
+  requestAdapterInfo?: () => Promise<BrowserGpuAdapterInfo>;
+};
+
+async function describeGpuAdapter(adapter: GPUAdapter): Promise<string | undefined> {
+  const adapterWithInfo = adapter as GpuAdapterWithInfo;
+  const info = adapterWithInfo.info ?? (typeof adapterWithInfo.requestAdapterInfo === 'function' ? await adapterWithInfo.requestAdapterInfo() : undefined);
+  if (!info) return undefined;
+  const details = [info.description, info.device, info.architecture, info.vendor].filter((value): value is string => Boolean(value));
+  return details.length ? Array.from(new Set(details)).join(' / ') : undefined;
 }
 
 async function runInference(id: string, rgbPng: Uint8Array, includePng: boolean, includeOverlay: boolean): Promise<InferenceResult> {
@@ -221,27 +312,27 @@ async function runInference(id: string, rgbPng: Uint8Array, includePng: boolean,
   }
   const started = performance.now();
   console.info('[VascX inference] Starting inference run', { id, backend });
-  progress('Decoding preprocessed image', 0.05);
+  progress('Decoding preprocessed image', 0.05, { phase: 'run', substage: 'Decode image' });
   const decoded = await decodeImageBytes(rgbPng);
   const tensor = imageToNormalizedTensor(decoded, manifest.defaults.normalize);
 
-  progress('Segmenting artery / vein mask', 0.18);
+  progress('Segmenting artery / vein mask', 0.18, { phase: 'run', substage: 'A/V' });
   const avLogits = await runSlidingWindow(sessions.av, tensor, mergeConfig(manifest, 'av'), manifest.models.av.classes);
   const avMask = softmaxArgmax(avLogits, manifest.models.av.classes, tensor.width, tensor.height);
 
-  progress('Segmenting vessel mask', 0.42);
+  progress('Segmenting vessel mask', 0.42, { phase: 'run', substage: 'Vessels' });
   const vesselsLogits = await runSlidingWindow(sessions.vessels, tensor, mergeConfig(manifest, 'vessels'), manifest.models.vessels.classes);
   const vesselsMask = softmaxArgmax(vesselsLogits, manifest.models.vessels.classes, tensor.width, tensor.height);
 
-  progress('Segmenting optic disc', 0.65);
+  progress('Segmenting optic disc', 0.65, { phase: 'run', substage: 'OD' });
   const discLogits = await runResizedWholeImage(sessions.disc, tensor, mergeConfig(manifest, 'disc'), manifest.models.disc.classes);
   const discMask = softmaxArgmax(discLogits, manifest.models.disc.classes, tensor.width, tensor.height);
 
-  progress('Detecting fovea', 0.82);
+  progress('Detecting fovea', 0.82, { phase: 'run', substage: 'Fovea' });
   const foveaHeatmap = await runResizedWholeImage(sessions.fovea, tensor, mergeConfig(manifest, 'fovea'), manifest.models.fovea.classes);
   const fovea = heatmapArgmax(foveaHeatmap, tensor.width, tensor.height);
 
-  progress(includePng ? 'Rendering inference outputs' : 'Finalising inference outputs', 0.92);
+  progress(includePng ? 'Rendering inference outputs' : 'Finalising inference outputs', 0.92, { phase: 'run', substage: includePng ? 'Render outputs' : 'Finalize outputs' });
   const [avMaskPng, vesselsMaskPng, discMaskPng, overlayPng] = includePng
     ? await Promise.all([
         maskToPng(avMask, tensor.width, tensor.height, [[0, 0, 0], [255, 0, 0], [0, 0, 255], [255, 0, 255]]),
@@ -252,7 +343,7 @@ async function runInference(id: string, rgbPng: Uint8Array, includePng: boolean,
     : [undefined, undefined, undefined, undefined];
 
   const durationMs = performance.now() - started;
-  progress('Inference complete', 1);
+  progress('Inference complete', 1, { phase: 'run', substage: 'Complete' });
   console.info('[VascX inference] Inference run complete', { id, backend, durationMs });
   return {
     id,
@@ -518,8 +609,8 @@ function compactTransferList(buffers: Array<ArrayBufferLike | undefined>): Trans
   return buffers.filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer);
 }
 
-function progress(message: string, progress?: number) {
-  post({ type: 'progress', stage: 'inference', message, progress });
+function progress(message: string, progress?: number, extra: Partial<ProgressMessage> = {}) {
+  post({ type: 'progress', stage: 'inference', message, progress, ...extra });
 }
 
 function post(message: WorkerResponse, transfer: Transferable[] = []) {

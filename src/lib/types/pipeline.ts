@@ -7,6 +7,14 @@ export interface ProgressMessage {
   stage: StageName | 'init';
   message: string;
   progress?: number;
+  phase?: 'init' | 'run';
+  substage?: string;
+  modelLabel?: string;
+  bytesLoaded?: number;
+  bytesTotal?: number;
+  downloadProgress?: number;
+  backend?: OrtBackend;
+  adapterName?: string;
 }
 
 export interface PipelineError {
@@ -41,6 +49,12 @@ export interface PreprocessResult {
   width: number;
   height: number;
   durationMs: number;
+}
+
+export interface InferenceInitResult {
+  backend: OrtBackend;
+  adapterName?: string;
+  defaultFeatureSet?: string;
 }
 
 export interface InferenceResult {
@@ -110,6 +124,7 @@ export type WorkerResponse =
 
 export interface ModelManifest {
   version: number;
+  defaultFeatureSet?: string;
   models: Record<
     'av' | 'vessels' | 'disc' | 'fovea',
     {

@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "defaultFeatureSet": "Full V3",
   "models": {
     "av": {
       "label": "Artery / vein",

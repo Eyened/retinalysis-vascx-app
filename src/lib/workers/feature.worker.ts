@@ -35,7 +35,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     post({
       type: 'error',
       requestId: message.requestId,
-      error: { message: 'Feature extraction failed', detail: error instanceof Error ? error.message : String(error), recoverable: true }
+      error: { message: 'Biomarker extraction failed', detail: error instanceof Error ? error.message : String(error), recoverable: true }
     });
   }
 };
@@ -73,10 +73,10 @@ import micropip
 await micropip.install(['retinalysis-vascx', 'retinalysis-fundusprep'])
 `);
 
-  progress('Preparing browser feature helpers', 0.8);
+  progress('Preparing browser biomarker helpers', 0.8);
   await pyodide.runPythonAsync(BROWSER_HELPERS_PY);
 
-  progress('Feature extraction worker ready', 1);
+  progress('Biomarker extraction worker ready', 1);
   ready = true;
   post({ type: 'ready', requestId });
 }
@@ -205,7 +205,7 @@ gc.collect()
 
 function assertReady() {
   if (!pyodide || !ready) {
-    throw new Error('Feature worker has not been initialised.');
+    throw new Error('Biomarker extraction worker has not been initialised.');
   }
 }
 
@@ -320,7 +320,7 @@ def retina_from_arrays(fundus, av_mask, vessels_mask, disc_mask, fovea_location,
 def _feature_set(name):
     feature_set = FeatureSet.get_by_name(name)
     if feature_set is None:
-        raise ValueError(f"Unknown feature set '{name}'")
+        raise ValueError(f"Unknown biomarker set '{name}'")
     return feature_set
 
 
@@ -382,7 +382,7 @@ def plot_feature_data_uri(retina, feature_set_name, canonical_name):
                 return f'data:image/png;base64,{encoded}'
             finally:
                 plt.close(fig)
-    raise KeyError(f"Feature '{canonical_name}' is not part of feature set '{feature_set_name}'")
+    raise KeyError(f"Biomarker '{canonical_name}' is not part of biomarker set '{feature_set_name}'")
 
 _vascx_browser_helpers = {
     'retina_from_arrays': retina_from_arrays,
