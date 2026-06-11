@@ -292,7 +292,7 @@ def _av_layers_from_label_mask(av_mask):
     }
 
 
-def retina_from_arrays(fundus, av_mask, vessels_mask, disc_mask, fovea_location, bounds=None, roi_mask=None, id=None, scaling_factor=1.0):
+def retina_from_arrays(fundus, av_mask, vessels_mask, disc_mask, fovea_location, bounds=None, roi_mask=None, id=None, mm_per_pixel=None, scaling_factor=None):
     fundus_array = np.asarray(fundus).astype(np.uint8)
     if roi_mask is None and bounds is not None:
         roi_mask = make_roi_mask_from_bounds(bounds, target_diameter=int(fundus_array.shape[0]))
@@ -311,7 +311,7 @@ def retina_from_arrays(fundus, av_mask, vessels_mask, disc_mask, fovea_location,
         fovea_location=fovea_location,
         bounds=bounds,
         roi_mask=roi_mask,
-        scaling_factor=scaling_factor,
+        mm_per_pixel=mm_per_pixel if mm_per_pixel is not None else scaling_factor,
         id=id,
     )
     return _normalize_retina_disc(retina)
