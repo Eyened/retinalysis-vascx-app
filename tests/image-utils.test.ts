@@ -38,6 +38,6 @@ describe('CSV export', () => {
     const csv = biomarkerRowsToCsv([
       { id: 'sample', biomarkers: [{ key: 'a', name: 'A', value: 'value, with comma' }] }
     ]);
-    expect(csv).toBe('id,a\nsample,"value, with comma"');
+    expect(csv).toBe('id,A\nsample,"value, with comma"');
   });
 });

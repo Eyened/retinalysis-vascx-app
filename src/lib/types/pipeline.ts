@@ -82,6 +82,7 @@ export interface BiomarkerRow {
 export interface FeatureSetSummary {
   name: string;
   displayName: string;
+  description: string;
   biomarkers: Array<{ key: string; name: string }>;
 }
 

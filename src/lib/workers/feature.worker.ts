@@ -244,13 +244,16 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy import ndimage as ndi
 
-from vascx.fundus.feature_sets import fs_bergmann, fs_full, fs_full_v2, fs_full_v3, fs_od_centered, fs_sparsity  # noqa: F401
+import vascx.fundus.feature_sets  # noqa: F401 — register FeatureSet instances
 from rtnls_enface.bounds import make_roi_mask_from_bounds
 from vascx.fundus.features.base import LayerFeature, RetinaFeature, VesselsLayerFeature
 from vascx.fundus.layer import VesselTreeLayer
 from vascx.fundus.retina import Retina
 from vascx.fundus.vessels_layer import FundusVesselsLayer
 from vascx.shared.features import FeatureSet
+from vascx.shared.naming import make_feature_names
+
+FEATURE_NAMING = 'resolved'
 
 
 def _as_uint8_mask(mask):
@@ -324,28 +327,49 @@ def _feature_set(name):
     return feature_set
 
 
+def _feature_names(feature_set):
+    return make_feature_names(
+        feature_set, Retina._target_names_for_feature, naming=FEATURE_NAMING
+    )
+
+
+def _resolve_target(retina, feature, target_name):
+    if isinstance(feature, RetinaFeature):
+        return retina
+    if isinstance(feature, LayerFeature):
+        for layer in retina.get_layers(VesselTreeLayer):
+            if layer.name == target_name:
+                return layer
+    elif isinstance(feature, VesselsLayerFeature):
+        for layer in retina.get_layers(FundusVesselsLayer):
+            if layer.name == target_name:
+                return layer
+    raise KeyError(f"No target '{target_name}' for feature {feature.__class__.__name__}")
+
+
 def feature_set_manifest():
     manifest = []
     for name, feature_set in sorted(FeatureSet._registry.items()):
-        biomarkers = []
-        for feature in feature_set:
-            targets = []
-            if isinstance(feature, RetinaFeature):
-                targets = ['retina']
-            elif isinstance(feature, LayerFeature):
-                targets = ['arteries', 'veins']
-            elif isinstance(feature, VesselsLayerFeature):
-                targets = ['vessels']
-            for target_name in targets:
-                biomarkers.append({'key': feature.canonical_name(layer_name=target_name), 'name': feature.display_name(layer_name=target_name)})
-        manifest.append({'name': name, 'displayName': name.replace('_', ' ').title(), 'biomarkers': biomarkers})
+        biomarkers = [
+            {'key': item.name, 'name': item.display_name}
+            for item in sorted(
+                _feature_names(feature_set).values(),
+                key=lambda item: (item.feature_index, item.target_name),
+            )
+        ]
+        manifest.append({
+            'name': name,
+            'displayName': name.replace('_', ' ').title(),
+            'description': feature_set.description or '',
+            'biomarkers': biomarkers,
+        })
     return manifest
 
 
 def compute_features_for_browser(retina, feature_set_name):
     feature_set = _feature_set(feature_set_name)
-    values = retina.calc_features(feature_set, raise_on_error=False)
-    display_names = Retina.make_feature_display_names(feature_set)
+    values = retina.calc_features(feature_set, raise_on_error=False, naming=FEATURE_NAMING)
+    display_names = Retina.make_feature_display_names(feature_set, naming=FEATURE_NAMING)
     rows = []
     for key, value in values.items():
         if hasattr(value, 'item'):
@@ -355,20 +379,16 @@ def compute_features_for_browser(retina, feature_set_name):
 
 
 def _feature_targets(retina, feature_set):
-    for feature in feature_set:
-        if isinstance(feature, RetinaFeature):
-            yield feature.canonical_name(layer_name='retina'), feature, retina
-        elif isinstance(feature, LayerFeature):
-            for layer in (retina.arteries, retina.veins):
-                yield feature.canonical_name(layer_name=layer.name), feature, layer
-        elif isinstance(feature, VesselsLayerFeature):
-            yield feature.canonical_name(layer_name=retina.vessels.name), feature, retina.vessels
+    features = list(feature_set)
+    for (feature_index, target_name), name_item in _feature_names(feature_set).items():
+        feature = features[feature_index]
+        yield name_item.name, feature, _resolve_target(retina, feature, target_name)
 
 
-def plot_feature_data_uri(retina, feature_set_name, canonical_name):
+def plot_feature_data_uri(retina, feature_set_name, feature_key):
     feature_set = _feature_set(feature_set_name)
     for key, feature, target in _feature_targets(retina, feature_set):
-        if key == canonical_name:
+        if key == feature_key:
             fig, ax = plt.subplots(1, 1, figsize=(8, 8), dpi=128)
             try:
                 if isinstance(feature, RetinaFeature):
@@ -382,7 +402,7 @@ def plot_feature_data_uri(retina, feature_set_name, canonical_name):
                 return f'data:image/png;base64,{encoded}'
             finally:
                 plt.close(fig)
-    raise KeyError(f"Biomarker '{canonical_name}' is not part of biomarker set '{feature_set_name}'")
+    raise KeyError(f"Biomarker '{feature_key}' is not part of biomarker set '{feature_set_name}'")
 
 _vascx_browser_helpers = {
     'retina_from_arrays': retina_from_arrays,

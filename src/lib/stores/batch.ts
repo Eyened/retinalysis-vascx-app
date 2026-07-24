@@ -15,6 +15,7 @@ export interface BatchResultRecord {
 export interface BatchCache {
   sourceSignature: string;
   sourceHash?: string;
+  featureSet?: string;
   createdAt: string;
   downloaded: boolean;
   records: BatchRecord[];

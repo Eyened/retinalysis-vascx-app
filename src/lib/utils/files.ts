@@ -31,15 +31,15 @@ export function downloadBytes(bytes: Uint8Array, filename: string, mimeType = 'i
 }
 
 export function biomarkerRowsToCsv(rows: Array<{ id?: string; biomarkers: BiomarkerRow[] }>): string {
-  const keys = Array.from(
-    new Set(rows.flatMap((row) => row.biomarkers.map((biomarker) => biomarker.key)))
+  const columns = Array.from(
+    new Set(rows.flatMap((row) => row.biomarkers.map((biomarker) => biomarker.name)))
   );
-  const header = ['id', ...keys];
+  const header = ['id', ...columns];
   const lines = [header.map(csvEscape).join(',')];
 
   for (const row of rows) {
-    const values = new Map(row.biomarkers.map((biomarker) => [biomarker.key, biomarker.value]));
-    lines.push([row.id ?? '', ...keys.map((key) => values.get(key) ?? '')].map(csvEscape).join(','));
+    const values = new Map(row.biomarkers.map((biomarker) => [biomarker.name, biomarker.value]));
+    lines.push([row.id ?? '', ...columns.map((column) => values.get(column) ?? '')].map(csvEscape).join(','));
   }
 
   return lines.join('\n');
