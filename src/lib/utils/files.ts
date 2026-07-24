@@ -30,6 +30,36 @@ export function downloadBytes(bytes: Uint8Array, filename: string, mimeType = 'i
   URL.revokeObjectURL(url);
 }
 
+/** Download an image URL as a full-resolution PNG. */
+export async function downloadUrlAsPng(url: string, filename: string): Promise<void> {
+  const image = await loadImage(url);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Could not create canvas context for PNG download.');
+  context.drawImage(image, 0, 0);
+
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('Could not encode PNG for download.');
+
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename.endsWith('.png') ? filename : `${filename}.png`;
+  anchor.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Could not load image for download.'));
+    image.src = url;
+  });
+}
+
 export function biomarkerRowsToCsv(rows: Array<{ id?: string; biomarkers: BiomarkerRow[] }>): string {
   const columns = Array.from(
     new Set(rows.flatMap((row) => row.biomarkers.map((biomarker) => biomarker.name)))

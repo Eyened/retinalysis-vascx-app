@@ -136,7 +136,16 @@ summary { cursor: pointer; color: var(--teal-dark); font-weight: 650; }
 .modal { position: relative; width: min(1080px, 96vw); max-height: 94vh; overflow: auto; background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.32); }
 .modal .close { position: absolute; top: 0.75rem; right: 0.75rem; }
 .modal h3 { margin: 0 2.5rem 0.75rem 0; }
-.modal img { width: 100%; max-height: 78vh; object-fit: contain; background: #f8fafc; }
+.modal-image-wrap { position: relative; }
+.modal img { width: 100%; max-height: 78vh; object-fit: contain; background: #f8fafc; display: block; }
+.modal-download {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.65rem;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+.modal-download:hover { background: #fff; border-color: #99f6e4; color: var(--teal-dark); }
 .plot-image { image-rendering: auto; aspect-ratio: 1 / 1; }
 
 .unsupported-shell {

@@ -31,7 +31,7 @@
     PreprocessResult,
     ProgressMessage
   } from '$lib/types/pipeline';
-  import { biomarkerRowsToCsv, bytesToArrayBuffer, bytesToObjectUrl, downloadBytes, fileToBytes, isValidImageName, VALID_IMAGE_EXTENSIONS } from '$lib/utils/files';
+  import { biomarkerRowsToCsv, bytesToArrayBuffer, bytesToObjectUrl, downloadBytes, downloadUrlAsPng, fileToBytes, isValidImageName, VALID_IMAGE_EXTENSIONS } from '$lib/utils/files';
   import { clearBatchCache, loadBatchCache, saveBatchMeta, saveBatchResult, sourceHashForSignature, sourceSignature, type BatchResultRecord } from '$lib/stores/batch';
   import ImageCard from '$lib/components/ImageCard.svelte';
 
@@ -87,7 +87,7 @@
   let boundsUrl = '';
   let rgbUrl = '';
   let overlayUrl = '';
-  let modalImage: { title: string; url: string; filename: string } | undefined;
+  let modalImage: { title: string; url: string; filename: string; bytes?: Uint8Array } | undefined;
   let plotModal: { title: string; url: string } | undefined;
   let runProgress: RunProgressState = { active: false, stage: '' };
   let currentCsvDownloaded = true;
@@ -773,6 +773,26 @@
     if (event.currentTarget === event.target) plotModal = undefined;
   }
 
+  function pngFilename(name: string): string {
+    const base = name.replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '_').replace(/^_|_$/g, '') || 'image';
+    return `${base}.png`;
+  }
+
+  async function downloadModalImage() {
+    if (!modalImage) return;
+    const filename = pngFilename(modalImage.filename || modalImage.title);
+    if (modalImage.bytes) {
+      downloadBytes(modalImage.bytes, filename);
+      return;
+    }
+    await downloadUrlAsPng(modalImage.url, filename);
+  }
+
+  async function downloadPlotImage() {
+    if (!plotModal?.url) return;
+    await downloadUrlAsPng(plotModal.url, pngFilename(plotModal.title));
+  }
+
   async function switchScreen(screen: Screen) {
     if (screen === activeScreen) return;
     if (runActive || stopping) {
@@ -827,7 +847,7 @@ If VascX is helpful to your research, please consider citing our manuscripts:
     <main class="content">
       <div class="alert info-notice">
         <Info size={18} />
-        <p>This web application runs VascX fundus biomarker extraction on the browser. Images and biomarkers are not uploaded to the internet. For more information please contact <a href="mailto:j.vargasquiros@erasmusmc.nl">j.vargasquiros@erasmusmc.nl</a></p>
+        <p>This app extracts retinal vascular biomarkers from color fundus images using the <a href="https://github.com/eyened/retinalysis-vascx" target="_blank">VascX algorithm</a>. Images and biomarkers are not uploaded to the internet. Instead, algorithms and models are downloaded to your browser. <b>Please wait for the pipeline to be ready and then follow the steps below.</b> For more information please contact <a href="mailto:j.vargasquiros@erasmusmc.nl">j.vargasquiros@erasmusmc.nl</a></p>
       </div>
 
       <section class:compact={appReady && inferenceReady} class="panel setup-panel">
@@ -892,8 +912,8 @@ If VascX is helpful to your research, please consider citing our manuscripts:
             {/if}
             <div class="image-grid">
               <ImageCard title="Uploaded image" url={uploadedUrl} filename={uploadedName || 'uploaded.png'} onOpen={() => (modalImage = { title: 'Uploaded image', url: uploadedUrl, filename: uploadedName || 'uploaded.png' })} />
-              <ImageCard title="Bounds" url={boundsUrl} filename={`${preprocessResult?.id ?? 'image'}_bounds.png`} bytes={preprocessResult?.boundsPng} onOpen={() => (modalImage = { title: 'Bounds', url: boundsUrl, filename: `${preprocessResult?.id ?? 'image'}_bounds.png` })} />
-              <ImageCard title="AI model overlay" url={overlayUrl} filename={`${preprocessResult?.id ?? 'image'}_overlay.png`} bytes={inferenceResult?.overlayPng} onOpen={() => (modalImage = { title: 'AI model overlay', url: overlayUrl, filename: `${preprocessResult?.id ?? 'image'}_overlay.png` })} />
+              <ImageCard title="Bounds" url={boundsUrl} filename={`${preprocessResult?.id ?? 'image'}_bounds.png`} bytes={preprocessResult?.boundsPng} onOpen={() => (modalImage = { title: 'Bounds', url: boundsUrl, filename: `${preprocessResult?.id ?? 'image'}_bounds.png`, bytes: preprocessResult?.boundsPng })} />
+              <ImageCard title="AI model overlay" url={overlayUrl} filename={`${preprocessResult?.id ?? 'image'}_overlay.png`} bytes={inferenceResult?.overlayPng} onOpen={() => (modalImage = { title: 'AI model overlay', url: overlayUrl, filename: `${preprocessResult?.id ?? 'image'}_overlay.png`, bytes: inferenceResult?.overlayPng })} />
             </div>
           </section>
 
@@ -1098,7 +1118,10 @@ If VascX is helpful to your research, please consider citing our manuscripts:
     <div class="modal" role="dialog" aria-modal="true" aria-label={modalImage.title}>
       <button class="icon-button close" on:click={() => (modalImage = undefined)}><X size={18} /></button>
       <h3>{modalImage.title}</h3>
-      <img src={modalImage.url} alt={modalImage.title} />
+      <div class="modal-image-wrap">
+        <img src={modalImage.url} alt={modalImage.title} />
+        <button class="icon-button modal-download" title="Download PNG" on:click={downloadModalImage}><Download size={18} /></button>
+      </div>
     </div>
   </div>
 {/if}
@@ -1109,7 +1132,10 @@ If VascX is helpful to your research, please consider citing our manuscripts:
       <button class="icon-button close" on:click={() => (plotModal = undefined)}><X size={18} /></button>
       <h3>{plotModal.title}</h3>
       {#if plotModal.url}
-        <img class="plot-image" src={plotModal.url} alt={plotModal.title} />
+        <div class="modal-image-wrap">
+          <img class="plot-image" src={plotModal.url} alt={plotModal.title} />
+          <button class="icon-button modal-download" title="Download PNG" on:click={downloadPlotImage}><Download size={18} /></button>
+        </div>
       {:else}
         <div class="progress-card"><Loader2 class="spin" /> Rendering plot</div>
       {/if}
