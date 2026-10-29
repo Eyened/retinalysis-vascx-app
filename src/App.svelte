@@ -89,7 +89,7 @@
   let rgbUrl = '';
   let overlayUrl = '';
   let modalImage: { title: string; url: string; filename: string; bytes?: Uint8Array } | undefined;
-  let plotModal: { title: string; url: string } | undefined;
+  let plotModal: { title: string; url: string; error?: string } | undefined;
   let runProgress: RunProgressState = { active: false, stage: '' };
   let currentCsvDownloaded = true;
 
@@ -479,10 +479,18 @@
   }
 
   async function renderPlot(row: BiomarkerRow) {
-    plotModal = { title: row.name, url: '' };
-    const url = (await featureClient.request({ type: 'renderFeaturePlot', key: row.key })) as string;
-    plotModal = { title: row.name, url };
-    markReadyAfterRun();
+    const modal = { title: row.name, url: '' };
+    plotModal = modal;
+    try {
+      const url = (await featureClient.request({ type: 'renderFeaturePlot', key: row.key })) as string;
+      if (plotModal === modal) plotModal = { ...modal, url };
+    } catch (error) {
+      if (plotModal === modal) {
+        plotModal = { ...modal, error: error instanceof Error ? error.message : String(error) };
+      }
+    } finally {
+      markReadyAfterRun();
+    }
   }
 
   function clearSingleOutputs() {
@@ -1128,6 +1136,8 @@ If VascX is helpful to your research, please consider citing our manuscripts:
           <img class="plot-image" src={plotModal.url} alt={plotModal.title} />
           <button class="icon-button modal-download" title="Download PNG" on:click={downloadPlotImage}><Download size={18} /></button>
         </div>
+      {:else if plotModal.error}
+        <div class="alert" role="alert"><AlertTriangle size={18} /> Could not render this plot: {plotModal.error}</div>
       {:else}
         <div class="progress-card"><Loader2 class="spin" /> Rendering plot</div>
       {/if}

@@ -251,7 +251,6 @@ from vascx.fundus.layer import VesselTreeLayer
 from vascx.fundus.retina import Retina
 from vascx.fundus.vessels_layer import FundusVesselsLayer
 from vascx.shared.features import FeatureSet
-from vascx.shared.naming import make_feature_names
 
 FEATURE_NAMING = 'resolved'
 
@@ -327,12 +326,6 @@ def _feature_set(name):
     return feature_set
 
 
-def _feature_names(feature_set):
-    return make_feature_names(
-        feature_set, Retina._target_names_for_feature, naming=FEATURE_NAMING
-    )
-
-
 def _resolve_target(retina, feature, target_name):
     if isinstance(feature, RetinaFeature):
         return retina
@@ -353,7 +346,7 @@ def feature_set_manifest():
         biomarkers = [
             {'key': item.name, 'name': item.display_name}
             for item in sorted(
-                _feature_names(feature_set).values(),
+                feature_set.names(naming=FEATURE_NAMING).outputs.values(),
                 key=lambda item: (item.feature_index, item.target_name),
             )
         ]
@@ -378,31 +371,25 @@ def compute_features_for_browser(retina, feature_set_name):
     return rows
 
 
-def _feature_targets(retina, feature_set):
-    features = list(feature_set)
-    for (feature_index, target_name), name_item in _feature_names(feature_set).items():
-        feature = features[feature_index]
-        yield name_item.name, feature, _resolve_target(retina, feature, target_name)
-
-
 def plot_feature_data_uri(retina, feature_set_name, feature_key):
     feature_set = _feature_set(feature_set_name)
-    for key, feature, target in _feature_targets(retina, feature_set):
-        if key == feature_key:
-            fig, ax = plt.subplots(1, 1, figsize=(8, 8), dpi=128)
-            try:
-                if isinstance(feature, RetinaFeature):
-                    feature.plot(ax=ax, retina=target)
-                else:
-                    feature.plot(ax=ax, layer=target)
-                ax.set_axis_off()
-                buffer = io.BytesIO()
-                fig.savefig(buffer, format='png', dpi=128, bbox_inches=None, pad_inches=0.0)
-                encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
-                return f'data:image/png;base64,{encoded}'
-            finally:
-                plt.close(fig)
-    raise KeyError(f"Biomarker '{feature_key}' is not part of biomarker set '{feature_set_name}'")
+    binding = feature_set.resolve(feature_key, naming=FEATURE_NAMING)
+    feature = binding.feature
+    target = _resolve_target(retina, feature, binding.target)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8), dpi=128)
+    try:
+        if isinstance(feature, RetinaFeature):
+            feature.plot(ax=ax, retina=target)
+        else:
+            feature.plot(ax=ax, layer=target)
+        ax.set_axis_off()
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format='png', dpi=128, bbox_inches=None, pad_inches=0.0)
+        encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+        return f'data:image/png;base64,{encoded}'
+    finally:
+        plt.close(fig)
+
 
 _vascx_browser_helpers = {
     'retina_from_arrays': retina_from_arrays,
