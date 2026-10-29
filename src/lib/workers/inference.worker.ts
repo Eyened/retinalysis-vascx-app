@@ -85,7 +85,7 @@ async function init(requestId: string) {
     });
   }
   progress('Inference models ready', 1, { phase: 'init' });
-  const payload: InferenceInitResult = { backend, adapterName, defaultFeatureSet: manifest.defaultFeatureSet };
+  const payload: InferenceInitResult = { backend, adapterName };
   post({ type: 'ready', requestId, payload });
 }
 

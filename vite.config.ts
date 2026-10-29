@@ -1,4 +1,5 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { svelteTesting } from '@testing-library/svelte/vite';
 import { webcrypto } from 'node:crypto';
 import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
@@ -12,6 +13,7 @@ export default defineConfig({
   base: process.env.VITE_BASE_PATH ?? (process.env.GITHUB_REPOSITORY ? '/retinalysis-vascx-app/' : '/'),
   plugins: [
     svelte(),
+    svelteTesting(),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {

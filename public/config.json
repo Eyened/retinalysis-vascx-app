@@ -1,0 +1,9 @@
+{
+  "defaultFeatureSet": "od_centered",
+  "featureSets": [
+    "od_centered",
+    "macula_centered",
+    "od_centered_narrow",
+    "hemifields"
+  ]
+}

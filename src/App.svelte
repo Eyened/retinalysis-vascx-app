@@ -20,6 +20,7 @@
   import InferenceWorker from '$lib/workers/inference.worker?worker';
   import FeatureWorker from '$lib/workers/feature.worker?worker';
   import { PipelineWorkerClient } from '$lib/workers/client';
+  import { configureFeatureSets, loadAppConfig, resolveFeatureSetName } from '$lib/config';
   import type {
     BatchRecord,
     BiomarkerRow,
@@ -71,9 +72,9 @@
   };
 
   let featureSets: FeatureSetSummary[] = [];
-  let defaultFeatureSet = 'Full V3';
-  let singleFeatureSet = 'Full V3';
-  let batchFeatureSet = 'Full V3';
+  let defaultFeatureSet = '';
+  let singleFeatureSet = '';
+  let batchFeatureSet = '';
   let uploadError = '';
   let processing = false;
   let batchRunning = false;
@@ -109,7 +110,7 @@
   let attributionHtml = '';
 
   $: backendSummaryText = inferenceBackend ? (inferenceAdapterName ? `${inferenceBackend.toUpperCase()} · ${inferenceAdapterName}` : inferenceBackend.toUpperCase()) : '';
-  $: appReady = workers.preprocess.status === 'ready' && workers.features.status === 'ready';
+  $: appReady = workers.preprocess.status === 'ready' && workers.features.status === 'ready' && featureSets.length > 0;
   $: inferenceReady = workers.inference.status === 'ready';
   $: runActive = processing || batchRunning;
   $: pipelineReady = appReady && inferenceReady && !runActive && !stopping;
@@ -152,7 +153,8 @@
     const results = await Promise.allSettled([
       preprocessClient.request({ type: 'init' }),
       inferenceClient.request({ type: 'init' }),
-      featureClient.request({ type: 'init' })
+      featureClient.request({ type: 'init' }),
+      loadAppConfig()
     ]);
 
     if (results[0].status === 'fulfilled') setWorker('preprocess', { status: 'ready', message: 'Preprocessing ready', progress: 1 });
@@ -162,19 +164,22 @@
       const payload = results[1].value as InferenceInitResult | undefined;
       inferenceBackend = payload?.backend;
       inferenceAdapterName = payload?.adapterName ?? '';
-      defaultFeatureSet = payload?.defaultFeatureSet ?? defaultFeatureSet;
       console.info('[VascX] ONNX Runtime backend ready:', inferenceBackend ?? 'unknown', inferenceAdapterName);
       setWorker('inference', { status: 'ready', message: `AI models ready${backendSummaryText ? ` (${backendSummaryText})` : ''}`, progress: 1 });
     } else setWorker('inference', { status: 'error', message: results[1].reason.message });
 
-    if (results[2].status === 'fulfilled') {
+    try {
+      if (results[2].status === 'rejected') throw results[2].reason;
+      if (results[3].status === 'rejected') throw results[3].reason;
+      const available = (await featureClient.request({ type: 'loadFeatureSets' })) as FeatureSetSummary[];
+      const configured = configureFeatureSets(results[3].value, available);
+      featureSets = configured.featureSets;
+      defaultFeatureSet = configured.defaultFeatureSet;
+      singleFeatureSet = defaultFeatureSet;
+      batchFeatureSet = defaultFeatureSet;
       setWorker('features', { status: 'ready', message: 'Biomarker extraction ready', progress: 1 });
-      featureSets = (await featureClient.request({ type: 'loadFeatureSets' })) as FeatureSetSummary[];
-      const resolvedDefault = resolveFeatureSetName(featureSets, defaultFeatureSet, singleFeatureSet) ?? singleFeatureSet;
-      singleFeatureSet = resolveFeatureSetName(featureSets, singleFeatureSet, resolvedDefault) ?? resolvedDefault;
-      batchFeatureSet = resolveFeatureSetName(featureSets, batchFeatureSet, resolvedDefault) ?? resolvedDefault;
-    } else {
-      setWorker('features', { status: 'error', message: results[2].reason.message });
+    } catch (error) {
+      setWorker('features', { status: 'error', message: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -237,19 +242,6 @@
 
   function clearRunProgress() {
     runProgress = { active: false, stage: '' };
-  }
-
-  function resolveFeatureSetName(sets: FeatureSetSummary[], preferred: string, fallback: string) {
-    const candidates = [preferred, fallback].map(normalizeFeatureSetName).filter(Boolean);
-    for (const candidate of candidates) {
-      const match = sets.find((set) => normalizeFeatureSetName(set.name) === candidate || normalizeFeatureSetName(set.displayName) === candidate);
-      if (match) return match.name;
-    }
-    return sets[0]?.name;
-  }
-
-  function normalizeFeatureSetName(value: string) {
-    return value.trim().toLowerCase().replace(/[ _-]+/g, '');
   }
 
   function formatBytes(value?: number) {
@@ -573,7 +565,7 @@
       batchDownloaded = cache.downloaded;
       batchCachedFeatureSet = cache.featureSet ?? '';
       if (cache.featureSet) {
-        batchFeatureSet = resolveFeatureSetName(featureSets, cache.featureSet, batchFeatureSet) ?? cache.featureSet;
+        batchFeatureSet = resolveFeatureSetName(featureSets, cache.featureSet, defaultFeatureSet) ?? '';
       }
       restoredBatchCache = cache.results.length > 0 || cache.records.some((record) => record.status === 'done');
       return;
@@ -603,7 +595,7 @@
     batchDownloaded = cache.downloaded;
     batchCachedFeatureSet = cache.featureSet ?? '';
     if (cache.featureSet) {
-      batchFeatureSet = resolveFeatureSetName(featureSets, cache.featureSet, batchFeatureSet) ?? cache.featureSet;
+      batchFeatureSet = resolveFeatureSetName(featureSets, cache.featureSet, defaultFeatureSet) ?? '';
     }
     restoredBatchCache = cache.results.length > 0 || cache.records.some((record) => record.status === 'done');
   }
@@ -922,7 +914,7 @@ If VascX is helpful to your research, please consider citing our manuscripts:
             <div class="step-body panel feature-set-panel">
               <div class="feature-set-controls">
                 <label class="field-label">Biomarker set
-                  <select bind:value={singleFeatureSet} disabled={processing || stopping}>
+                  <select bind:value={singleFeatureSet} disabled={!featureSets.length || processing || stopping}>
                     {#each featureSets as set}
                       <option value={set.name}>{set.displayName}</option>
                     {/each}
@@ -1042,7 +1034,7 @@ If VascX is helpful to your research, please consider citing our manuscripts:
             <div class="step-body panel feature-set-panel">
               <div class="feature-set-controls">
                 <label class="field-label">Biomarker set
-                  <select bind:value={batchFeatureSet} disabled={batchRunning || stopping}>
+                  <select bind:value={batchFeatureSet} disabled={!featureSets.length || batchRunning || stopping}>
                     {#each featureSets as set}
                       <option value={set.name}>{set.displayName}</option>
                     {/each}

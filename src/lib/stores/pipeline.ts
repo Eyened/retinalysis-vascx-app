@@ -32,7 +32,7 @@ export const stages = writable<Record<StageName | 'init', StageState>>({
 export const singleImage = writable<SingleImageState>({
   biomarkers: [],
   featureSets: [],
-  selectedFeatureSet: 'full_v2',
+  selectedFeatureSet: '',
   stage3Ready: false
 });
 

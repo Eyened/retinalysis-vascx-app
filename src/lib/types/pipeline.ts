@@ -54,7 +54,6 @@ export interface PreprocessResult {
 export interface InferenceInitResult {
   backend: OrtBackend;
   adapterName?: string;
-  defaultFeatureSet?: string;
 }
 
 export interface InferenceResult {
@@ -125,7 +124,6 @@ export type WorkerResponse =
 
 export interface ModelManifest {
   version: number;
-  defaultFeatureSet?: string;
   models: Record<
     'av' | 'vessels' | 'disc' | 'fovea',
     {
